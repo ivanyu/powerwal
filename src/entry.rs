@@ -40,7 +40,7 @@ pub enum DeserializationError {
 
 impl Entry {
     const MAGIC_SIZE: usize = size_of::<u8>() * 4;
-    const MAGIC: [u8; 4] = [42, 23, 78, 99];
+    const MAGIC: [u8; 4] = [69, 78, 84, 82]; // ENTR
 
     pub(crate) fn new(offset: u64, payload: &[u8]) -> Entry {
         // TODO guard against too big payloads
@@ -152,7 +152,7 @@ mod tests {
     use std::io::{Cursor, ErrorKind, Read};
 
     #[rstest]
-    fn test_ser_de(
+    fn ser_de(
         #[values(
         vec![],
         vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
@@ -164,7 +164,7 @@ mod tests {
         let entry = Entry::new(offset, &payload);
         let serialized = entry.serialize();
         // Check that magic is written.
-        assert_eq!(serialized[serialized.len() - 4..], vec![42, 23, 78, 99]);
+        assert_eq!(serialized[serialized.len() - 4..], vec![69, 78, 84, 82]);
 
         let cursor = Cursor::new(serialized.as_slice());
         let entry2 = Entry::deserialize(offset, cursor).unwrap();
@@ -172,7 +172,7 @@ mod tests {
     }
 
     #[test]
-    fn test_broken_crc() {
+    fn broken_crc() {
         let payload: Vec<u8> = vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
         let entry = Entry::new(0, &payload);
 
@@ -185,7 +185,7 @@ mod tests {
     }
 
     #[test]
-    fn test_broken_magic() {
+    fn broken_magic() {
         let payload: Vec<u8> = vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
         let entry = Entry::new(0, &payload);
 
@@ -199,7 +199,7 @@ mod tests {
     }
 
     #[test]
-    fn test_smaller_size() {
+    fn smaller_size() {
         let payload: Vec<u8> = vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
         let entry = Entry::new(0, &payload);
 
@@ -212,7 +212,7 @@ mod tests {
     }
 
     #[test]
-    fn test_bigger_size_nothing_after() {
+    fn bigger_size_nothing_after() {
         let payload: Vec<u8> = vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
         let entry = Entry::new(0, &payload);
 
@@ -225,7 +225,7 @@ mod tests {
     }
 
     #[test]
-    fn test_bigger_size_something_after() {
+    fn bigger_size_something_after() {
         let payload: Vec<u8> = vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
         let entry = Entry::new(0, &payload);
 
@@ -266,7 +266,7 @@ mod tests {
     }
 
     #[rstest]
-    fn test_faulty_input(
+    fn faulty_input(
         #[values(0, 1, 3, 10, 22)] fail_at_pos: u64,
         #[values(ErrorKind::UnexpectedEof, ErrorKind::Other)] error_kind: ErrorKind,
     ) {
