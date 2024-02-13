@@ -15,13 +15,15 @@
  */
 
 #[cfg(test)]
+use std::path::Path;
+
+#[cfg(test)]
+use mockall::mock;
+
+#[cfg(test)]
 use crate::fs::file_system::FileSystem;
 #[cfg(test)]
 use crate::fs::mock_file::MockTestFile;
-#[cfg(test)]
-use mockall::mock;
-#[cfg(test)]
-use std::path::Path;
 
 #[cfg(test)]
 mock! {

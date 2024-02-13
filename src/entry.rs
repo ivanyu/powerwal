@@ -42,26 +42,18 @@ impl Entry {
     const MAGIC_SIZE: usize = size_of::<u8>() * 4;
     const MAGIC: [u8; 4] = [69, 78, 84, 82]; // ENTR
 
-    pub(crate) fn new(offset: u64, payload: &[u8]) -> Entry {
+    pub(crate) fn new(offset: u64, payload: Vec<u8>) -> Entry {
         // TODO guard against too big payloads
         Entry {
             offset,
-            payload: payload.to_vec(),
+            payload: payload,
         }
     }
 
     pub(crate) fn serialize(&self) -> Vec<u8> {
         // TODO zigzag encoding
 
-        let expected_capacity =
-            // CRC and size
-            size_of::<u32>() * 2
-                // Payload size
-                + self.payload.len()
-                + Entry::MAGIC_SIZE;
-
-        // TODO check we calculated correctly.
-        let mut cur = Cursor::new(Vec::with_capacity(expected_capacity));
+        let mut cur = Cursor::new(Vec::with_capacity(self.serialized_size()));
 
         // It's safe to unwrap writes in this method,
         // because everything is in memory and no interruption is possible.
@@ -94,16 +86,25 @@ impl Entry {
         cur.into_inner()
     }
 
+    pub(crate) fn serialized_size(&self) -> usize {
+        // CRC and payload size
+        size_of::<u32>() * 2
+            // payload
+            + self.payload.len()
+            // magic
+            + Entry::MAGIC_SIZE
+    }
+
     pub(crate) fn deserialize(
         offset: u64,
-        mut input: impl Read,
+        input: &mut impl Read,
     ) -> Result<Entry, DeserializationError> {
         let mut crc32_hasher = Hasher::new();
 
         // We do only two reads here.
 
         let (crc32, size) = {
-            let mut crc32_and_size_vec = vec![0_u8; (size_of::<u32>() * 2) as usize];
+            let mut crc32_and_size_vec = vec![0_u8; size_of::<u32>() * 2];
             input
                 .read_exact(&mut crc32_and_size_vec)
                 .map_err(DeserializationError::from)?;
@@ -115,6 +116,11 @@ impl Entry {
                 Entry::read_u32(&mut crc32_and_size_cur)?,
             )
         };
+
+        // Even with 0-byte payload, the size with magic can't be less than the magic size.
+        if size < Self::MAGIC_SIZE as u32 {
+            return Err(DeserializationError::Validation);
+        }
 
         let mut payload_and_magic = vec![0_u8; size as usize];
         input
@@ -146,10 +152,10 @@ impl Entry {
 mod tests {
     use crate::entry::{DeserializationError, Entry};
     use assert_matches::assert_matches;
-    use mockall::mock;
+    use byteorder::{BigEndian, WriteBytesExt};
     use rstest::rstest;
     use std::error::Error;
-    use std::io::{Cursor, ErrorKind, Read};
+    use std::io::{Cursor, ErrorKind, Read, Seek, SeekFrom};
 
     #[rstest]
     fn ser_de(
@@ -161,73 +167,73 @@ mod tests {
         payload: Vec<u8>,
         #[values(0, 1, u64::MAX)] offset: u64,
     ) {
-        let entry = Entry::new(offset, &payload);
+        let entry = Entry::new(offset, payload);
         let serialized = entry.serialize();
         // Check that magic is written.
         assert_eq!(serialized[serialized.len() - 4..], vec![69, 78, 84, 82]);
 
-        let cursor = Cursor::new(serialized.as_slice());
-        let entry2 = Entry::deserialize(offset, cursor).unwrap();
+        let mut cursor = Cursor::new(serialized.as_slice());
+        let entry2 = Entry::deserialize(offset, &mut cursor).unwrap();
         assert_eq!(entry, entry2);
     }
 
     #[test]
     fn broken_crc() {
         let payload: Vec<u8> = vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
-        let entry = Entry::new(0, &payload);
+        let entry = Entry::new(0, payload);
 
         let mut serialized = entry.serialize();
         serialized[0] += 1;
 
-        let cursor = Cursor::new(serialized.as_slice());
-        let result = Entry::deserialize(0, cursor);
+        let mut cursor = Cursor::new(serialized.as_slice());
+        let result = Entry::deserialize(0, &mut cursor);
         assert_matches!(result, Err(DeserializationError::Validation));
     }
 
     #[test]
     fn broken_magic() {
         let payload: Vec<u8> = vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
-        let entry = Entry::new(0, &payload);
+        let entry = Entry::new(0, payload);
 
         let mut serialized = entry.serialize();
         let idx = serialized.len() - 2;
         serialized[idx] += 1;
 
-        let cursor = Cursor::new(serialized.as_slice());
-        let result = Entry::deserialize(0, cursor);
+        let mut cursor = Cursor::new(serialized.as_slice());
+        let result = Entry::deserialize(0, &mut cursor);
         assert_matches!(result, Err(DeserializationError::Validation));
     }
 
     #[test]
     fn smaller_size() {
         let payload: Vec<u8> = vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
-        let entry = Entry::new(0, &payload);
+        let entry = Entry::new(0, payload);
 
         let mut serialized = entry.serialize();
         serialized[7] -= 1;
 
-        let cursor = Cursor::new(serialized.as_slice());
-        let result = Entry::deserialize(0, cursor);
+        let mut cursor = Cursor::new(serialized.as_slice());
+        let result = Entry::deserialize(0, &mut cursor);
         assert_matches!(result, Err(DeserializationError::Validation));
     }
 
     #[test]
     fn bigger_size_nothing_after() {
         let payload: Vec<u8> = vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
-        let entry = Entry::new(0, &payload);
+        let entry = Entry::new(0, payload);
 
         let mut serialized = entry.serialize();
         serialized[7] += 1;
 
-        let cursor = Cursor::new(serialized.as_slice());
-        let result = Entry::deserialize(0, cursor);
+        let mut cursor = Cursor::new(serialized.as_slice());
+        let result = Entry::deserialize(0, &mut cursor);
         assert_matches!(result, Err(DeserializationError::IO { source: _ }));
     }
 
     #[test]
     fn bigger_size_something_after() {
         let payload: Vec<u8> = vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
-        let entry = Entry::new(0, &payload);
+        let entry = Entry::new(0, payload);
 
         let mut serialized = entry.serialize();
         serialized[7] += 1;
@@ -235,19 +241,35 @@ mod tests {
         serialized.push(2);
         serialized.push(3);
 
-        let cursor = Cursor::new(serialized.as_slice());
-        let result = Entry::deserialize(0, cursor);
+        let mut cursor = Cursor::new(serialized.as_slice());
+        let result = Entry::deserialize(0, &mut cursor);
         assert_matches!(result, Err(DeserializationError::Validation));
     }
 
-    mock! {
-        TestRead {}
-        impl Read for TestRead {
-            fn read(&mut self, buf: &mut [u8]) -> Result<usize, std::io::Error>;
-            fn read_exact(&mut self, buf: &mut [u8]) -> std::io::Result<()>;
-        }
+    #[test]
+    fn test_read_from_many_zeros() {
+        // This is a realistic scenario of reading from a padded file.
+        let buf = vec![0_u8; 1024];
+        let mut cursor = Cursor::new(buf);
+        let result = Entry::deserialize(0, &mut cursor);
+        assert_matches!(result, Err(DeserializationError::Validation));
     }
 
+    #[test]
+    fn test_size_less_than_magic() {
+        // This is a realistic scenario of reading from a padded file.
+        let buf = vec![0_u8; 1024];
+        let mut cursor = Cursor::new(buf);
+        cursor.write_u32::<BigEndian>(0).unwrap(); // crc32, we don't care about the value.
+        cursor
+            .write_u32::<BigEndian>((Entry::MAGIC_SIZE - 1) as u32)
+            .unwrap();
+        cursor.seek(SeekFrom::Start(0)).unwrap();
+        let result = Entry::deserialize(0, &mut cursor);
+        assert_matches!(result, Err(DeserializationError::Validation));
+    }
+
+    // TODO replace with mock??
     struct FaultyRead {
         inner: Cursor<Vec<u8>>,
         fail_at_pos: u64,
@@ -270,14 +292,14 @@ mod tests {
         #[values(0, 1, 3, 10, 22)] fail_at_pos: u64,
         #[values(ErrorKind::UnexpectedEof, ErrorKind::Other)] error_kind: ErrorKind,
     ) {
-        let entry = Entry::new(0, &vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+        let entry = Entry::new(0, vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
         let serialized = entry.serialize();
-        let faulty_read = FaultyRead {
+        let mut faulty_read = FaultyRead {
             inner: Cursor::new(serialized),
             fail_at_pos,
             error_kind,
         };
-        let result = Entry::deserialize(0, faulty_read);
+        let result = Entry::deserialize(0, &mut faulty_read);
         assert_matches!(result, Err(DeserializationError::IO { .. }));
         let deser_error = result.unwrap_err();
         let io_error = deser_error
@@ -286,5 +308,14 @@ mod tests {
             .downcast_ref::<std::io::Error>()
             .unwrap();
         assert_eq!(io_error.kind(), error_kind);
+    }
+
+    #[test]
+    fn test_serialized_size() {
+        let buf = vec![1_u8; 1024 * 1024];
+        let entry = Entry::new(0, buf);
+        let serialized = entry.serialize();
+        assert_eq!(serialized.len(), entry.serialized_size());
+        assert_eq!(serialized.len(), 4 + 4 + 1024 * 1024 + Entry::MAGIC_SIZE);
     }
 }

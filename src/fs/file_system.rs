@@ -14,10 +14,11 @@
  * limitations under the License.
  */
 
-use crate::fs::file::File;
 use std::fs::ReadDir;
 use std::io;
 use std::path::Path;
+
+use crate::fs::file::File;
 
 pub(crate) trait FileSystem<T>
 where

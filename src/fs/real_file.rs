@@ -14,10 +14,11 @@
  * limitations under the License.
  */
 
-use crate::fs::file::File;
 use std::fs::File as StdFile;
 use std::io;
 use std::io::{IoSlice, IoSliceMut, Read, Seek, SeekFrom, Write};
+
+use crate::fs::file::{File, SizeableFile};
 
 #[derive(Debug)]
 pub(crate) struct RealFile {
@@ -77,12 +78,7 @@ impl Seek for RealFile {
     }
 }
 
-impl File for RealFile {
-    #[inline]
-    fn sync_all(&self) -> io::Result<()> {
-        self.file.sync_data()
-    }
-
+impl SizeableFile for RealFile {
     #[inline]
     fn get_len(&self) -> io::Result<u64> {
         self.file.metadata().map(|m| m.len())
@@ -94,13 +90,22 @@ impl File for RealFile {
     }
 }
 
+impl File for RealFile {
+    #[inline]
+    fn sync_all(&self) -> io::Result<()> {
+        self.file.sync_data()
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use crate::fs::file::File;
-    use crate::fs::real_file::RealFile;
     use std::fs::File as StdFile;
     use std::io::{IoSlice, IoSliceMut, Read, Seek, SeekFrom, Write};
+
     use tempfile::NamedTempFile;
+
+    use crate::fs::file::{File, SizeableFile};
+    use crate::fs::real_file::RealFile;
 
     const WRITTEN: [u8; 8] = [0_u8, 1, 2, 3, 4, 5, 6, 7];
 

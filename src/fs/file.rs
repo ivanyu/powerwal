@@ -14,14 +14,17 @@
  * limitations under the License.
  */
 
-use byteorder::WriteBytesExt;
 use std::io;
 use std::io::{Read, Seek, Write};
 
-pub(crate) trait File: Read + Write + Seek + WriteBytesExt {
-    fn sync_all(&self) -> io::Result<()>;
+use byteorder::WriteBytesExt;
 
+pub(crate) trait SizeableFile: Seek {
     fn get_len(&self) -> io::Result<u64>;
 
     fn set_len(&self, size: u64) -> io::Result<()>;
+}
+
+pub(crate) trait File: SizeableFile + Read + Write + Seek + WriteBytesExt {
+    fn sync_all(&self) -> io::Result<()>;
 }

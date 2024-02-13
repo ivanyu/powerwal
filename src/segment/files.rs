@@ -14,29 +14,19 @@
  * limitations under the License.
  */
 
-use std::ffi::OsString;
-use std::io;
-use std::io::ErrorKind;
-use std::mem::size_of;
-use std::path::Path;
-use std::str::FromStr;
-
-use byteorder::{BigEndian, ReadBytesExt};
-use lazy_static::lazy_static;
-use log::error;
-use regex::Regex;
-use thiserror::Error;
-
 use crate::fs::file::File;
 use crate::fs::file_system::FileSystem;
 use crate::preallocator::Preallocator;
-
-lazy_static! {
-    static ref LOG_FILE_NAME_RE: Regex = Regex::new(r"^(\d{20})\.log$").unwrap();
-}
+use crate::segment::constants::{MAGIC, MAGIC_SIZE, VERSION, VERSION_SIZE};
+use crate::segment::file_names::get_base_offset_from_segment_log_file_name;
+use byteorder::{BigEndian, ReadBytesExt};
+use std::io;
+use std::io::ErrorKind;
+use std::path::Path;
+use thiserror::Error;
 
 #[derive(Error, Debug)]
-enum SegmentError {
+pub(super) enum SegmentFileError {
     #[error("file not found")]
     NotFound,
 
@@ -50,61 +40,18 @@ enum SegmentError {
     },
 }
 
-const MAGIC_SIZE: usize = size_of::<u8>() * 4;
-
-// PWAL
-const MAGIC: [u8; 4] = [80, 87, 65, 76];
-
-const VERSION_SIZE: usize = size_of::<u16>();
-const VERSION: u16 = 0;
-
-pub(crate) struct Segment {
-    base_offset: u64,
-    size: u64,
-}
-
-impl Segment {
-    const PREALLOCATE_SIZE: u64 = 64 * 1024 * 1024; // TODO make configurable
-
-    //     fn new(dir: &Path, base_offset: u64, active: bool) -> Segment {
-    //         let filename = dir.join(log_file_name(base_offset));
-    //
-    //         let file_for_read = match fs::File::open(filename) {
-    //             Ok(f) => f,
-    //
-    //             Err(e) if e.kind() == NotFound && active => {
-    //                 // TODO: Create and init
-    //
-    //                 unimplemented!()
-    //             }
-    //
-    //             Err(e) if e.kind() == NotFound && !active => {
-    //                 unimplemented!()
-    //             }
-    //
-    //             Err(e) => {
-    //                 println!("{:?}", e.kind());
-    //                 unimplemented!()
-    //             }
-    //         };
-    //
-    //         Segment {
-    //             base_offset,
-    //             size: 0,
-    //         }
-    //     }
-}
-
-fn create_file_for_read_write<T>(
+pub(super) fn create_file_for_read_write<T>(
     fs: &impl FileSystem<T>,
     path: &Path,
     preallocator: impl Preallocator,
-) -> Result<T, SegmentError>
+) -> Result<T, SegmentFileError>
 where
     T: File,
 {
-    let mut file = fs.create_for_read_write(path).map_err(SegmentError::from)?;
-    init_segment_file(&mut file, preallocator).map_err(SegmentError::from)?;
+    let mut file = fs
+        .create_for_read_write(path)
+        .map_err(SegmentFileError::from)?;
+    init_segment_file(&mut file, preallocator).map_err(SegmentFileError::from)?;
     Ok(file)
 }
 
@@ -116,45 +63,51 @@ fn init_segment_file(file: &mut impl File, preallocator: impl Preallocator) -> i
     Ok(())
 }
 
-fn open_file_for_read_write<T>(fs: &impl FileSystem<T>, path: &Path) -> Result<T, SegmentError>
+pub(super) fn open_file_for_read_write<T>(
+    fs: &impl FileSystem<T>,
+    path: &Path,
+) -> Result<T, SegmentFileError>
 where
     T: File,
 {
     match fs.open_for_read_write(path) {
         Ok(mut file) => {
-            let valid =
-                check_segment_file_initialized_validly(&mut file).map_err(SegmentError::from)?;
+            let valid = check_segment_file_initialized_validly(&mut file)
+                .map_err(SegmentFileError::from)?;
             if valid {
                 Ok(file)
             } else {
-                Err(SegmentError::InvalidSegmentFile)
+                Err(SegmentFileError::InvalidSegmentFile)
             }
         }
 
-        Err(e) if e.kind() == ErrorKind::NotFound => Err(SegmentError::NotFound),
+        Err(e) if e.kind() == ErrorKind::NotFound => Err(SegmentFileError::NotFound),
 
-        Err(e) => Err(SegmentError::from(e)),
+        Err(e) => Err(SegmentFileError::from(e)),
     }
 }
 
-fn open_file_for_read<T>(fs: &impl FileSystem<T>, path: &Path) -> Result<T, SegmentError>
+pub(super) fn open_file_for_read<T>(
+    fs: &impl FileSystem<T>,
+    path: &Path,
+) -> Result<T, SegmentFileError>
 where
     T: File,
 {
     match fs.open_for_read(path) {
         Ok(mut file) => {
-            let valid =
-                check_segment_file_initialized_validly(&mut file).map_err(SegmentError::from)?;
+            let valid = check_segment_file_initialized_validly(&mut file)
+                .map_err(SegmentFileError::from)?;
             if valid {
                 Ok(file)
             } else {
-                Err(SegmentError::InvalidSegmentFile)
+                Err(SegmentFileError::InvalidSegmentFile)
             }
         }
 
-        Err(e) if e.kind() == ErrorKind::NotFound => Err(SegmentError::NotFound),
+        Err(e) if e.kind() == ErrorKind::NotFound => Err(SegmentFileError::NotFound),
 
-        Err(e) => Err(SegmentError::from(e)),
+        Err(e) => Err(SegmentFileError::from(e)),
     }
 }
 
@@ -188,27 +141,6 @@ fn check_segment_file_initialized_validly(file: &mut impl File) -> io::Result<bo
     }
 }
 
-fn log_file_name(base_offset: u64) -> String {
-    return format!("{:0>20}.log", base_offset);
-}
-
-fn get_base_offset_from_segment_log_file_name(file_name: OsString) -> Option<u64> {
-    match file_name.to_str() {
-        Some(s) => match LOG_FILE_NAME_RE.captures(s) {
-            Some(captures) => {
-                // Safe to unwrap: we know the group 1 exists.
-                let r = captures.get(1).unwrap().as_str();
-                u64::from_str(r).ok()
-            }
-
-            None => None,
-        },
-
-        // Unsupported symbols -- for sure it's not what we're looking for, skipping.
-        None => None,
-    }
-}
-
 fn list_log_segments<T>(fs: impl FileSystem<T>, dir: &Path) -> Vec<u64>
 where
     T: File,
@@ -225,12 +157,6 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::ffi::OsString;
-
-    use rstest::rstest;
-
-    use crate::segment::{get_base_offset_from_segment_log_file_name, log_file_name};
-
     mod test_init_segment {
         use std::fs::File as StdFile;
         use std::io::ErrorKind;
@@ -241,7 +167,7 @@ mod tests {
         use crate::fs::mock_file::MockTestFile;
         use crate::fs::real_file::RealFile;
         use crate::preallocator::NormalPreallocator;
-        use crate::segment::{check_segment_file_initialized_validly, init_segment_file};
+        use crate::segment::files::{check_segment_file_initialized_validly, init_segment_file};
 
         #[test]
         fn successfully() {
@@ -341,7 +267,8 @@ mod tests {
 
         use crate::fs::mock_file::MockTestFile;
         use crate::fs::real_file::RealFile;
-        use crate::segment::{check_segment_file_initialized_validly, MAGIC, VERSION};
+        use crate::segment::constants::{MAGIC, VERSION};
+        use crate::segment::files::check_segment_file_initialized_validly;
 
         #[test]
         fn not_enough_bytes_for_magic() {
@@ -456,8 +383,8 @@ mod tests {
         use crate::fs::real_file::RealFile;
         use crate::fs::real_file_system::RealFileSystem;
         use crate::preallocator::NormalPreallocator;
-        use crate::segment::tests::test_init_segment::check_segment_initialized;
-        use crate::segment::{create_file_for_read_write, SegmentError};
+        use crate::segment::files::tests::test_init_segment::check_segment_initialized;
+        use crate::segment::files::{create_file_for_read_write, SegmentFileError};
         use crate::test_utils::temp_file_path;
 
         #[test]
@@ -488,7 +415,7 @@ mod tests {
             };
             let error =
                 create_file_for_read_write(&fs, temp_file.path(), preallocator).unwrap_err();
-            assert_matches!(error, SegmentError::IO { source: _ });
+            assert_matches!(error, SegmentFileError::IO { source: _ });
             let io_error = error
                 .source()
                 .unwrap()
@@ -509,7 +436,7 @@ mod tests {
             };
             let error =
                 create_file_for_read_write(&fs, Path::new("aaa"), preallocator).unwrap_err();
-            assert_matches!(error, SegmentError::IO { source: _ });
+            assert_matches!(error, SegmentFileError::IO { source: _ });
             let io_error = error
                 .source()
                 .unwrap()
@@ -536,7 +463,7 @@ mod tests {
             };
             let error =
                 create_file_for_read_write(&fs, Path::new("aaa"), preallocator).unwrap_err();
-            assert_matches!(error, SegmentError::IO { source: _ });
+            assert_matches!(error, SegmentFileError::IO { source: _ });
             let io_error = error
                 .source()
                 .unwrap()
@@ -564,7 +491,7 @@ mod tests {
             };
             let error =
                 create_file_for_read_write(&fs, Path::new("aaa"), preallocator).unwrap_err();
-            assert_matches!(error, SegmentError::IO { source: _ });
+            assert_matches!(error, SegmentFileError::IO { source: _ });
             let io_error = error
                 .source()
                 .unwrap()
@@ -587,7 +514,9 @@ mod tests {
         use crate::fs::mock_file_system::MockTestFileSystem;
         use crate::fs::real_file_system::RealFileSystem;
         use crate::preallocator::NormalPreallocator;
-        use crate::segment::{create_file_for_read_write, open_file_for_read_write, SegmentError};
+        use crate::segment::files::{
+            create_file_for_read_write, open_file_for_read_write, SegmentFileError,
+        };
         use crate::test_utils::temp_file_path;
 
         #[test]
@@ -631,7 +560,7 @@ mod tests {
             }
 
             let error = open_file_for_read_write(&fs, temp_file.as_path()).unwrap_err();
-            assert_matches!(error, SegmentError::InvalidSegmentFile);
+            assert_matches!(error, SegmentFileError::InvalidSegmentFile);
         }
 
         #[test]
@@ -640,7 +569,7 @@ mod tests {
             let temp_dir = tempfile::tempdir().unwrap();
             let temp_file = temp_file_path(temp_dir.path(), 10);
             let error = open_file_for_read_write(&fs, temp_file.as_path()).unwrap_err();
-            assert_matches!(error, SegmentError::NotFound);
+            assert_matches!(error, SegmentFileError::NotFound);
         }
 
         #[test]
@@ -650,7 +579,7 @@ mod tests {
                 .return_once(|_| Err(std::io::Error::new(ErrorKind::Other, "test_error")));
 
             let error = open_file_for_read_write(&fs, Path::new("aaa")).unwrap_err();
-            assert_matches!(error, SegmentError::IO { source: _ });
+            assert_matches!(error, SegmentFileError::IO { source: _ });
             let source = error.source().unwrap();
             let source_error = source.downcast_ref::<std::io::Error>().unwrap();
             assert_eq!(source_error.kind(), ErrorKind::Other);
@@ -668,7 +597,7 @@ mod tests {
                 .return_once(move |_| Ok(file));
 
             let error = open_file_for_read_write(&fs, Path::new("aaa")).unwrap_err();
-            assert_matches!(error, SegmentError::IO { source: _ });
+            assert_matches!(error, SegmentFileError::IO { source: _ });
             let source = error.source().unwrap();
             let source_error = source.downcast_ref::<std::io::Error>().unwrap();
             assert_eq!(source_error.kind(), ErrorKind::Other);
@@ -688,7 +617,9 @@ mod tests {
         use crate::fs::mock_file_system::MockTestFileSystem;
         use crate::fs::real_file_system::RealFileSystem;
         use crate::preallocator::NormalPreallocator;
-        use crate::segment::{create_file_for_read_write, open_file_for_read, SegmentError};
+        use crate::segment::files::{
+            create_file_for_read_write, open_file_for_read, SegmentFileError,
+        };
         use crate::test_utils::temp_file_path;
 
         #[test]
@@ -734,7 +665,7 @@ mod tests {
             }
 
             let error = open_file_for_read(&fs, temp_file.as_path()).unwrap_err();
-            assert_matches!(error, SegmentError::InvalidSegmentFile);
+            assert_matches!(error, SegmentFileError::InvalidSegmentFile);
         }
 
         #[test]
@@ -743,7 +674,7 @@ mod tests {
             let temp_dir = tempfile::tempdir().unwrap();
             let temp_file = temp_file_path(temp_dir.path(), 10);
             let error = open_file_for_read(&fs, temp_file.as_path()).unwrap_err();
-            assert_matches!(error, SegmentError::NotFound);
+            assert_matches!(error, SegmentFileError::NotFound);
         }
 
         #[test]
@@ -753,7 +684,7 @@ mod tests {
                 .return_once(|_| Err(std::io::Error::new(ErrorKind::Other, "test_error")));
 
             let error = open_file_for_read(&fs, Path::new("aaa")).unwrap_err();
-            assert_matches!(error, SegmentError::IO { source: _ });
+            assert_matches!(error, SegmentFileError::IO { source: _ });
             let source = error.source().unwrap();
             let source_error = source.downcast_ref::<std::io::Error>().unwrap();
             assert_eq!(source_error.kind(), ErrorKind::Other);
@@ -770,7 +701,7 @@ mod tests {
             fs.expect_open_for_read().return_once(move |_| Ok(file));
 
             let error = open_file_for_read(&fs, Path::new("aaa")).unwrap_err();
-            assert_matches!(error, SegmentError::IO { source: _ });
+            assert_matches!(error, SegmentFileError::IO { source: _ });
             let source = error.source().unwrap();
             let source_error = source.downcast_ref::<std::io::Error>().unwrap();
             assert_eq!(source_error.kind(), ErrorKind::Other);
@@ -785,7 +716,7 @@ mod tests {
 
         use crate::fs::mock_file_system::MockTestFileSystem;
         use crate::fs::real_file_system::RealFileSystem;
-        use crate::segment::list_log_segments;
+        use crate::segment::files::list_log_segments;
 
         #[test]
         fn success() {
@@ -814,32 +745,5 @@ mod tests {
                 .return_once(|_| Err(std::io::Error::new(ErrorKind::Other, "test_error")));
             list_log_segments(fs, Path::new("aaa"));
         }
-    }
-
-    #[rstest]
-    #[case(0, "00000000000000000000.log")]
-    #[case(1234, "00000000000000001234.log")]
-    #[case(12345123451234512345, "12345123451234512345.log")]
-    fn test_log_file_name(#[case] base_offset: u64, #[case] expected: String) {
-        assert_eq!(log_file_name(base_offset), expected);
-    }
-
-    #[rstest]
-    #[case("00000000000000000000.xxx", None)]
-    #[case("00000000000000000000.log1", None)]
-    #[case("00000000000000000000.log", Some(0))]
-    #[case("00000000000000001234.log", Some(1234))]
-    #[case("12345123451234512345.log", Some(12345123451234512345))]
-    #[case("a.log", None)]
-    #[case("0000000000000000000a.log", None)]
-    #[case("1.log", None)]
-    #[case("0000000000000000123.log", None)]
-    #[case("9999999999999999999.log", None)] // too big
-    #[case(unsafe { OsString::from_encoded_bytes_unchecked(vec ! [0x9f]) }, None)] // invalid UTF
-    fn test_get_base_offset_from_segment_log_file_name(
-        #[case] input: OsString,
-        #[case] expected: Option<u64>,
-    ) {
-        assert_eq!(get_base_offset_from_segment_log_file_name(input), expected);
     }
 }

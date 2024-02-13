@@ -15,11 +15,16 @@
  */
 
 #[cfg(test)]
-use crate::fs::file::File;
+use std::io::{Read, Result, Seek, SeekFrom, Write};
+
 #[cfg(test)]
 use mockall::mock;
+
 #[cfg(test)]
-use std::io::{Read, Result, Seek, SeekFrom, Write};
+use crate::fs::file::File;
+
+#[cfg(test)]
+use crate::fs::file::SizeableFile;
 
 #[cfg(test)]
 mock! {
@@ -42,6 +47,9 @@ mock! {
 
     impl File for TestFile {
         fn sync_all(&self) -> Result<()>;
+    }
+
+    impl SizeableFile for TestFile {
         fn get_len(&self) -> Result<u64>;
         fn set_len(&self, size: u64) -> Result<()>;
     }

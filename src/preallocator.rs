@@ -14,25 +14,51 @@
  * limitations under the License.
  */
 
-use crate::fs::file::File;
+use crate::fs::file::SizeableFile;
 use std::io;
 
 pub(crate) trait Preallocator {
-    fn preallocate_if_needed(&self, file: &mut impl File, to_write: u64) -> io::Result<()>;
+    fn preallocate_if_needed<TF: SizeableFile>(
+        &self,
+        file: &mut TF,
+        to_write: u64,
+    ) -> io::Result<()>;
 }
 
+#[derive(Clone, Debug)]
 pub(crate) struct NormalPreallocator {
     pub(crate) preallocate_size: u64,
 }
 
 impl Preallocator for NormalPreallocator {
-    fn preallocate_if_needed(&self, file: &mut impl File, to_write: u64) -> io::Result<()> {
+    fn preallocate_if_needed<TF: SizeableFile>(
+        &self,
+        file: &mut TF,
+        to_write: u64,
+    ) -> io::Result<()> {
         let size = file.get_len()?;
         let pos = file.stream_position()?;
         match next_file_size_with_preallocation(size, pos, to_write, self.preallocate_size) {
             Some(next_size) => file.set_len(next_size),
             None => Ok(()),
         }
+    }
+}
+
+#[cfg(test)]
+mockall::mock! {
+    #[cfg(test)]
+    #[derive(Debug)]
+    pub(crate) TestPreallocator {}
+
+    #[cfg(test)]
+    impl Preallocator for TestPreallocator {
+        #[mockall::concretize]
+        fn preallocate_if_needed<TF: SizeableFile>(&self, file: &mut TF, to_write: u64) -> io::Result<()>;
+    }
+
+    impl Clone for TestPreallocator {
+        fn clone(&self) -> Self;
     }
 }
 
@@ -59,15 +85,17 @@ fn can_fit_into_file_without_allocation(size: u64, pos: u64, to_write: u64) -> b
 
 #[cfg(test)]
 mod tests {
-    use crate::fs::file::File;
+    use std::io::{ErrorKind, Write};
+
+    use rstest::rstest;
+
+    use crate::fs::file::SizeableFile;
     use crate::fs::mock_file::MockTestFile;
     use crate::fs::real_file::RealFile;
     use crate::preallocator::{
         can_fit_into_file_without_allocation, next_file_size_with_preallocation,
         NormalPreallocator, Preallocator,
     };
-    use rstest::rstest;
-    use std::io::{ErrorKind, Write};
 
     #[rstest]
     #[case(10, 1024, 1024)]

@@ -14,14 +14,11 @@
  * limitations under the License.
  */
 
-mod config;
+use std::mem::size_of;
 
-mod entry;
+pub(super) const MAGIC_SIZE: usize = size_of::<u8>() * 4;
+// PWAL
+pub(super) const MAGIC: [u8; 4] = [80, 87, 65, 76];
 
-mod fs;
-mod segment;
-
-mod preallocator;
-
-#[cfg(test)]
-mod test_utils;
+pub(super) const VERSION_SIZE: usize = size_of::<u16>();
+pub(super) const VERSION: u16 = 0;
